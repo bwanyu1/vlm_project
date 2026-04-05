@@ -220,6 +220,25 @@ print(caption)
 | epochs | 3〜10 | 学習エポック数 |
 
 ---
+データセットを変える場合の変更箇所
+config.py（1行）
+pythondataset_name: str = "別のデータセット名"
+dataset.py（変更が必要な可能性がある箇所）
+python# ① データセットのバージョン指定（データセットによって不要な場合も）
+self.data = load_dataset(
+    config.dataset_name,
+    "v1.2.0",      # ← ここをデータセットに合わせる or 削除
+    split=split,
+)
+
+# ② キャプションのフィールド名
+captions = item.get("captions")  # ← フィールド名がデータセットによって違う
+                                  # "caption" / "text" / "description" など
+
+変更不要な部分
+ファイル理由model.pyPatchProjectionはデータに無関係train.py学習ループはデータに無関係cache_embeddings.pyキャプション取得部分だけdataset.pyと同じ修正が必要
+cache_embeddings.pyも同じフィールド名を使っているので、dataset.pyを直したら同じ箇所を直す必要があります。
+---
 
 ## 動作環境
 
