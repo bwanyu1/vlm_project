@@ -7,41 +7,65 @@
 
 ## アーキテクチャ概要
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                      学習フェーズ                        │
-│                                                         │
-│  [画像 224x224]                                         │
-│       │                                                 │
-│  パッチ分割 (16x16) → 196パッチ                          │
-│       │                                                 │
-│  ┌────▼─────────────────────┐                           │
-│  │   PatchProjection (6M)   │  ← 唯一の学習対象         │
-│  │  Linear → GELU → Linear  │                           │
-│  │  768 → 1536 → 1536       │                           │
-│  └────────────┬─────────────┘                           │
-│               │ mean pool                               │
-│          画像ベクトル (1536)                             │
-│               │                                         │
-│               ▼                                         │
-│         InfoNCE Loss  ◄── テキストベクトル (1536)        │
-│                              ↑                          │
-│                    [キャッシュ済みQwen埋め込み]           │
-│                    caption_cache/*.npy                  │
-└─────────────────────────────────────────────────────────┘
+### 学習フェーズ
 
-┌─────────────────────────────────────────────────────────┐
-│                      推論フェーズ                        │
-│                                                         │
-│  [画像] → PatchProjection → inputs_embeds               │
-│                                    │                    │
-│                              ┌─────▼──────┐             │
-│                              │  Qwen2.5   │  (凍結)     │
-│                              │  1.5B      │             │
-│                              └─────┬──────┘             │
-│                                    │                    │
-│                         「猫が座っています」             │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph CACHE["事前処理（1回だけ）"]
+        C1[STAIR-Captions\n日本語キャプション]
+        C2["Qwen2.5-1.5B\n凍結"]
+        C3["caption_cache/*.npy\n(N×5, 1536)"]
+        C1 --> C2 --> C3
+    end
+
+    subgraph TRAIN["学習ループ"]
+        I1["画像 224×224"]
+        I2["パッチ分割 16×16\n→ 196パッチ"]
+        I3["🔥 PatchProjection\nLinear→GELU→Linear\n768 → 1536 → 1536\n← 唯一の学習対象 (6M params)"]
+        I4["mean pool\n画像ベクトル (1536)"]
+        I5["InfoNCE Loss\n画像↔テキストを近づける"]
+        I1 --> I2 --> I3 --> I4 --> I5
+    end
+
+    C3 -- "テキストベクトル (1536)" --> I5
+```
+
+### 推論フェーズ
+
+```mermaid
+flowchart LR
+    A["画像入力"]
+    B["🔥 PatchProjection\n学習済みweights"]
+    C["inputs_embeds\n196トークン分のベクトル"]
+    D["Qwen2.5-1.5B\n凍結 ❄️\nEmbedding層スキップ"]
+    E["「猫が座っています。」\n日本語キャプション生成"]
+
+    A --> B --> C --> D --> E
+```
+
+### LLM と VLM の差分
+
+```mermaid
+flowchart TD
+    subgraph LLM["普通の LLM"]
+        L1[テキスト入力]
+        L2[Embedding 層\ntoken_id → ベクトル]
+        L3[Transformer Blocks\n言語理解・推論・生成]
+        L4[テキスト出力]
+        L1 --> L2 --> L3 --> L4
+    end
+
+    subgraph VLM["VLM（このプロジェクト）"]
+        V0["🔥 PatchProjection ← ここだけ追加・学習"]
+        V1[画像入力]
+        V2["Embedding 層\n~~スキップ~~"]
+        V3[Transformer Blocks\n完全に同じ・凍結 ❄️]
+        V4[テキスト出力]
+        V1 --> V0 -- "inputs_embeds に直接流す" --> V3 --> V4
+        V2 -. スキップ .-> V3
+    end
+
+    LLM -- "PatchProjection を追加するだけ" --> VLM
 ```
 
 ---
