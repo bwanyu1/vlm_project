@@ -153,7 +153,7 @@ conda activate vlm
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install transformers datasets accelerate pillow tqdm bitsandbytes
 ```
-cudaが搭載せれてないマシンの場合torch部分の変更有
+- cudaが搭載せれてないマシンの場合torch部分の変更有
 ---
 
 ## 実行方法
