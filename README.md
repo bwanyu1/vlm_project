@@ -232,12 +232,9 @@ self.data = load_dataset(
 )
 
 ## ② キャプションのフィールド名
-captions = item.get("captions")  # ← フィールド名がデータセットによって違う
-                                  # "caption" / "text" / "description" など
+captions = item.get("captions")  ← フィールド名がデータセットによって違う
+"caption" / "text" / "description" など
 
-変更不要な部分
-ファイル理由model.pyPatchProjectionはデータに無関係train.py学習ループはデータに無関係cache_embeddings.pyキャプション取得部分だけdataset.pyと同じ修正が必要
-cache_embeddings.pyも同じフィールド名を使っているので、dataset.pyを直したら同じ箇所を直す必要があります。
 ---
 
 ## 動作環境
