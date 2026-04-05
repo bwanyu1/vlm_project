@@ -231,7 +231,7 @@ self.data = load_dataset(
     split=split,
 )
 
-# ② キャプションのフィールド名
+## ② キャプションのフィールド名
 captions = item.get("captions")  # ← フィールド名がデータセットによって違う
                                   # "caption" / "text" / "description" など
 
