@@ -19,6 +19,7 @@ class Config:
     weight_decay: float = 0.01
     warmup_steps: int = 200
     max_new_tokens: int = 64    # 生成するキャプションの最大長
+    temperature: float = 0.07   # InfoNCE温度パラメータ
 
     # データ
     dataset_name: str = "shunk031/STAIR-Captions"
