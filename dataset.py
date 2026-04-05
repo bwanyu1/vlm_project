@@ -1,4 +1,5 @@
 import os
+import platform
 import random
 import numpy as np
 import torch
@@ -8,6 +9,7 @@ from PIL import Image
 from torchvision import transforms
 import requests
 from io import BytesIO
+from utils import get_captions
 
 
 def get_transforms(image_size: int, train: bool = True):
@@ -30,13 +32,21 @@ def get_transforms(image_size: int, train: bool = True):
         ])
 
 
+def safe_num_workers(requested: int) -> int:
+    system = platform.system()
+    is_apple_silicon = (system == "Darwin" and platform.machine() == "arm64")
+    if system == "Windows" or is_apple_silicon:
+        if requested > 0:
+            print(f"  [INFO] {system} 環境のため num_workers=0 に変更します")
+        return 0
+    return requested
+
+
 class STAIRDataset(Dataset):
     def __init__(self, split: str, config):
         self.config    = config
         self.transform = get_transforms(config.image_size, train=(split == "train"))
-        self.split     = split
 
-        # キャッシュの確認
         cache_path = os.path.join("./caption_cache", f"{split}.npy")
         if not os.path.exists(cache_path):
             raise FileNotFoundError(
@@ -45,13 +55,10 @@ class STAIRDataset(Dataset):
             )
 
         print(f"Loading STAIR-Captions ({split})...")
-        self.data = load_dataset(
-            config.dataset_name, "v1.2.0", split=split
-        )
+        self.data = load_dataset(config.dataset_name, "v1.2.0", split=split)
         print(f"  {len(self.data)} samples loaded.")
 
-        # キャプション埋め込みキャッシュをロード
-        self.caption_embeds = np.load(cache_path)  # (N*5, D)
+        self.caption_embeds = np.load(cache_path)
         print(f"  Caption cache loaded: {self.caption_embeds.shape}")
 
     def __len__(self):
@@ -63,7 +70,7 @@ class STAIRDataset(Dataset):
         # 画像取得
         image = item.get("image")
         if image is None:
-            url = item.get("url") or item.get("image_url", "")
+            url = item.get("coco_url") or item.get("flickr_url", "")
             try:
                 resp  = requests.get(url, timeout=5)
                 image = Image.open(BytesIO(resp.content)).convert("RGB")
@@ -77,34 +84,30 @@ class STAIRDataset(Dataset):
 
         image_tensor = self.transform(image)
 
-        # キャッシュから埋め込みをランダムに1つ選ぶ（5つ中）
-        cap_offset = random.randint(0, 4)
-        embed = self.caption_embeds[idx * 5 + cap_offset]  # (D,)
+        # キャッシュからランダムに1つ選ぶ（5つ中）
+        caps       = get_captions(item)
+        n_caps     = min(len(caps), 5)
+        cap_offset = random.randint(0, n_caps - 1)
+        embed      = self.caption_embeds[idx * 5 + cap_offset]
         embed_tensor = torch.from_numpy(embed.copy()).float()
 
         return {
-            "image":         image_tensor,    # (3, H, W)
-            "text_embed":    embed_tensor,    # (D,)  ← Qwen埋め込み済み
+            "image":      image_tensor,
+            "text_embed": embed_tensor,
         }
 
 
 def get_dataloaders(config):
     train_dataset = STAIRDataset("train",      config)
     val_dataset   = STAIRDataset("validation", config)
+    nw = safe_num_workers(config.num_workers)
 
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        num_workers=config.num_workers,
-        pin_memory=True,
-        drop_last=True,
+        train_dataset, batch_size=config.batch_size,
+        shuffle=True,  num_workers=nw, pin_memory=(nw > 0), drop_last=True,
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.batch_size,
-        shuffle=False,
-        num_workers=config.num_workers,
-        pin_memory=True,
+        val_dataset,   batch_size=config.batch_size,
+        shuffle=False, num_workers=nw, pin_memory=(nw > 0),
     )
     return train_loader, val_loader

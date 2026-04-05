@@ -6,7 +6,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from tqdm import tqdm
 
 from config import Config
-from model import PatchProjectionTrainer, get_tokenizer
+from model import PatchProjectionTrainer
 from dataset import get_dataloaders
 
 
@@ -56,7 +56,6 @@ def evaluate(model, loader, config):
         image      = batch["image"].to(config.device)
         text_embed = batch["text_embed"].to(config.device)
 
-        # evalはfloat32で計算（bf16の丸め問題を回避）
         loss, _ = model(image, text_embed)
         total_loss += loss.item()
 
@@ -68,27 +67,25 @@ def main():
     os.makedirs(config.save_dir, exist_ok=True)
 
     print("=" * 50)
-    print("LLaVA-style VLM Training (キャッシュ高速化版)")
+    print("LLaVA-style VLM Training")
     print(f"  Text encoder : {config.text_model_name} [cache only]")
     print(f"  Patch size   : {config.patch_size}x{config.patch_size} "
           f"→ {(config.image_size // config.patch_size)**2} patches")
     print(f"  Batch size   : {config.batch_size} x "
-          f"{config.grad_accum_steps} accum = {config.batch_size * config.grad_accum_steps} 実効")
+          f"{config.grad_accum_steps} accum = "
+          f"{config.batch_size * config.grad_accum_steps} 実効")
     print("=" * 50)
 
-    model = PatchProjectionTrainer(config).to(config.device)
+    model        = PatchProjectionTrainer(config).to(config.device)
     train_loader, val_loader = get_dataloaders(config)
 
     trainable = list(model.parameters())
-    print(f"\nTrainable: {sum(p.numel() for p in trainable)/1e6:.1f}M "
-          f"(PatchProjection + logit_scale)\n")
+    print(f"\nTrainable: {sum(p.numel() for p in trainable)/1e6:.1f}M\n")
 
-    optimizer = AdamW(trainable, lr=config.lr,
-                      weight_decay=config.weight_decay)
+    optimizer = AdamW(trainable, lr=config.lr, weight_decay=config.weight_decay)
 
-    total_steps = (len(train_loader) // config.grad_accum_steps
-                   * config.epochs)
-    scheduler = OneCycleLR(
+    total_steps = (len(train_loader) // config.grad_accum_steps * config.epochs)
+    scheduler   = OneCycleLR(
         optimizer,
         max_lr=config.lr,
         total_steps=total_steps,
@@ -96,13 +93,12 @@ def main():
         anneal_strategy="cos",
     )
 
-    scaler = GradScaler("cuda", enabled=config.mixed_precision)
+    scaler        = GradScaler("cuda", enabled=config.mixed_precision)
     best_val_loss = float("inf")
 
     for epoch in range(config.epochs):
         train_loss = train_one_epoch(
-            model, train_loader, optimizer,
-            scheduler, scaler, config, epoch
+            model, train_loader, optimizer, scheduler, scaler, config, epoch
         )
         val_loss = evaluate(model, val_loader, config)
 
