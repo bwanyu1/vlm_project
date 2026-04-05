@@ -143,7 +143,7 @@ class LLaVAModel(nn.Module):
         else:
             self.llm = AutoModelForCausalLM.from_pretrained(
                 config.text_model_name,
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 trust_remote_code=True,
             )
 
@@ -157,30 +157,44 @@ class LLaVAModel(nn.Module):
             self.patch_proj.load_state_dict(patch_proj_state_dict)
             print("PatchProjection weights loaded.")
 
+        # PatchProjectionをQwenと同じdtype(bfloat16)に統一
+        llm_dtype = next(self.llm.parameters()).dtype
+        self.patch_proj = self.patch_proj.to(dtype=llm_dtype)
+
     @torch.no_grad()
     def generate(self, image: torch.Tensor, tokenizer,
                  prompt: str = "この画像を説明してください。",
                  max_new_tokens: int = 64):
         self.eval()
-        dtype = self.patch_proj.proj[0].weight.dtype
+
+        # Qwenのdtypeに合わせる（bfloat16）
+        llm_dtype = next(self.llm.parameters()).dtype
+        device    = next(self.llm.parameters()).device
 
         image_embeds = self.patch_proj(
-            image.unsqueeze(0).to(dtype)
+            image.unsqueeze(0).to(device=device, dtype=llm_dtype)
         )                                          # (1, N, D)
 
         prompt_ids = tokenizer(
             prompt, return_tensors="pt"
-        ).input_ids.to(image.device)
+        ).input_ids.to(device)
         prompt_embeds = self.llm.get_input_embeddings()(
             prompt_ids
-        ).to(dtype)
+        ).to(dtype=llm_dtype)
 
         inputs_embeds = torch.cat([image_embeds, prompt_embeds], dim=1)
 
+        # attention_maskを明示的に渡す
+        attention_mask = torch.ones(
+            inputs_embeds.shape[:2], dtype=torch.long, device=device
+        )
+
         out = self.llm.generate(
             inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
         )
         return tokenizer.decode(out[0], skip_special_tokens=True)
 
