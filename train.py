@@ -56,10 +56,8 @@ def evaluate(model, loader, config):
         image      = batch["image"].to(config.device)
         text_embed = batch["text_embed"].to(config.device)
 
-        with autocast("cuda", dtype=torch.bfloat16,
-                      enabled=config.mixed_precision):
-            loss, _ = model(image, text_embed)
-
+        # evalはfloat32で計算（bf16の丸め問題を回避）
+        loss, _ = model(image, text_embed)
         total_loss += loss.item()
 
     return total_loss / len(loader)
@@ -75,10 +73,9 @@ def main():
     print(f"  Patch size   : {config.patch_size}x{config.patch_size} "
           f"→ {(config.image_size // config.patch_size)**2} patches")
     print(f"  Batch size   : {config.batch_size} x "
-          f"{config.grad_accum_steps} accum")
+          f"{config.grad_accum_steps} accum = {config.batch_size * config.grad_accum_steps} 実効")
     print("=" * 50)
 
-    # Qwenはロードしない（キャッシュのみ使用）
     model = PatchProjectionTrainer(config).to(config.device)
     train_loader, val_loader = get_dataloaders(config)
 
@@ -110,7 +107,7 @@ def main():
         val_loss = evaluate(model, val_loader, config)
 
         print(f"\nEpoch {epoch+1}/{config.epochs}  "
-              f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
+              f"train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
 
         ckpt = {
             "epoch":      epoch,
@@ -128,11 +125,9 @@ def main():
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(ckpt, os.path.join(config.save_dir, "best.pt"))
-            print(f"  → Best model updated (val_loss={val_loss:.4f})")
+            print(f"  → Best model updated (val_loss={val_loss:.6f})")
 
     print("\nTraining complete!")
-    print("推論時は LLaVAModel(config, patch_proj_state_dict=ckpt['patch_proj'])"
-          " でQwenと繋げられます")
 
 
 if __name__ == "__main__":
