@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Japanese VLM Architecture</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; margin: 0; padding: 24px; }
+  h1 { color: #7eb8f7; font-size: 22px; margin-bottom: 4px; }
+  h2 { color: #9ecbff; font-size: 15px; font-weight: 500; margin: 24px 0 10px; }
+  .subtitle { color: #888; font-size: 13px; margin-bottom: 32px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .card { background: #1a1d27; border: 1px solid #2a2d3e; border-radius: 12px; padding: 20px; }
+  .card.full { grid-column: 1 / -1; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #2a2d3e; color: #9ecbff; padding: 8px 12px; text-align: left; }
+  td { padding: 8px 12px; border-bottom: 1px solid #2a2d3e; color: #ccc; }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge.train { background: #1a3a2a; color: #7ef7a0; border: 1px solid #3aaa6a; }
+  .badge.freeze { background: #1a1a3a; color: #aaaaff; border: 1px solid #5555aa; }
+  .badge.new { background: #3a1a1a; color: #ffaa77; border: 1px solid #aa5533; }
+</style>
+</head>
+<body>
+
+<h1>Japanese VLM — アーキテクチャ & 学習設計</h1>
+<p class="subtitle">LLaVA式 · Qwen2.5-1.5B凍結 · PatchProjection 6Mパラメータのみ学習</p>
+
+<div class="grid">
+
+  <!-- 差分図：LLMとVLMの違い -->
+  <div class="card full">
+    <h2>普通のLLM と VLM の違い ── 差分はここだけ</h2>
+    <svg width="100%" viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#666" stroke-width="1.5" stroke-linecap="round"/>
+        </marker>
+        <marker id="ao" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#ffaa44" stroke-width="1.5" stroke-linecap="round"/>
+        </marker>
+        <marker id="ag" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#7ef7a0" stroke-width="1.5" stroke-linecap="round"/>
+        </marker>
+      </defs>
+
+      <!-- 左: 普通のLLM -->
+      <rect x="10" y="10" width="390" height="240" rx="12" fill="#1e2235" stroke="#3a4060" stroke-width="1"/>
+      <text x="205" y="34" text-anchor="middle" fill="#7eb8f7" font-size="13" font-weight="600">普通の LLM</text>
+
+      <rect x="120" y="48" width="170" height="36" rx="7" fill="#252a45" stroke="#4a5aaa" stroke-width="1"/>
+      <text x="205" y="70" text-anchor="middle" fill="#aaaaff" font-size="12">テキスト入力</text>
+
+      <line x1="205" y1="84" x2="205" y2="104" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+      <rect x="100" y="104" width="210" height="36" rx="7" fill="#252a45" stroke="#4a5aaa" stroke-width="1.5"/>
+      <text x="205" y="122" text-anchor="middle" fill="#aaaaff" font-size="12" font-weight="600">Embedding 層</text>
+      <text x="205" y="136" text-anchor="middle" fill="#667799" font-size="10">token_id → ベクトル</text>
+
+      <line x1="205" y1="140" x2="205" y2="160" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+      <rect x="80" y="160" width="250" height="44" rx="7" fill="#252a45" stroke="#4a5aaa" stroke-width="1.5"/>
+      <text x="205" y="180" text-anchor="middle" fill="#aaaaff" font-size="12" font-weight="600">Transformer Blocks</text>
+      <text x="205" y="195" text-anchor="middle" fill="#667799" font-size="10">（言語理解・推論・生成）</text>
+
+      <line x1="205" y1="204" x2="205" y2="224" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+      <rect x="120" y="224" width="170" height="26" rx="7" fill="#1e2235" stroke="#3a4060" stroke-width="1"/>
+      <text x="205" y="241" text-anchor="middle" fill="#8899bb" font-size="11">テキスト出力</text>
+
+      <!-- 右: VLM -->
+      <rect x="500" y="10" width="390" height="240" rx="12" fill="#1e2820" stroke="#3a5040" stroke-width="1"/>
+      <text x="695" y="34" text-anchor="middle" fill="#7ef7a0" font-size="13" font-weight="600">VLM（このプロジェクト）</text>
+
+      <!-- 追加ブロック（オレンジ） -->
+      <rect x="560" y="48" width="270" height="46" rx="7" fill="#2a2010" stroke="#cc8833" stroke-width="2"/>
+      <text x="695" y="67" text-anchor="middle" fill="#ffcc66" font-size="12" font-weight="600">★ PatchProjection（追加）</text>
+      <text x="695" y="82" text-anchor="middle" fill="#997744" font-size="10">画像パッチ → Qwen埋め込み空間  ← ここだけ学習</text>
+
+      <line x1="695" y1="94" x2="695" y2="114" stroke="#ffaa44" stroke-width="1.5" marker-end="url(#ao)"/>
+
+      <!-- Embedding層はスキップ（グレーアウト） -->
+      <rect x="590" y="114" width="210" height="36" rx="7" fill="#1e1e2a" stroke="#333355" stroke-width="1" stroke-dasharray="5 3"/>
+      <text x="695" y="132" text-anchor="middle" fill="#445566" font-size="12">Embedding 層</text>
+      <text x="695" y="145" text-anchor="middle" fill="#334455" font-size="10">← スキップ（inputs_embeds で直接流す）</text>
+
+      <line x1="695" y1="150" x2="695" y2="168" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+      <rect x="570" y="168" width="250" height="44" rx="7" fill="#252a45" stroke="#4a5aaa" stroke-width="1.5"/>
+      <text x="695" y="188" text-anchor="middle" fill="#aaaaff" font-size="12" font-weight="600">Transformer Blocks</text>
+      <text x="695" y="203" text-anchor="middle" fill="#667799" font-size="10">（完全に同じ・凍結）</text>
+
+      <line x1="695" y1="212" x2="695" y2="232" stroke="#555" stroke-width="1.5" marker-end="url(#ag)"/>
+
+      <rect x="610" y="232" width="170" height="26" rx="7" fill="#1e2820" stroke="#3a5040" stroke-width="1"/>
+      <text x="695" y="249" text-anchor="middle" fill="#7aaa88" font-size="11">テキスト出力（画像について）</text>
+
+      <!-- 差分ラベル -->
+      <rect x="558" y="46" width="4" height="50" rx="2" fill="#ffaa44"/>
+      <text x="830" y="72" text-anchor="middle" fill="#ffaa44" font-size="11" font-weight="600">← 追加した部分</text>
+      <text x="830" y="85" text-anchor="middle" fill="#886633" font-size="10">これだけ学習すれば OK</text>
+
+      <!-- 中央の矢印と説明 -->
+      <text x="450" y="130" text-anchor="middle" fill="#555" font-size="20">→</text>
+      <text x="450" y="148" text-anchor="middle" fill="#666" font-size="10">変換</text>
+    </svg>
+
+    <div style="margin-top:12px; padding:12px 16px; background:#1e2010; border:1px solid #4a6030; border-radius:8px; font-size:13px; line-height:1.8; color:#aabbaa;">
+      <strong style="color:#7ef7a0;">ポイント：</strong>
+      LLMとVLMの構造的な差分は <strong style="color:#ffcc66;">PatchProjection 1ブロックのみ</strong>。<br>
+      Transformer本体・Embedding層・LMヘッドは <strong style="color:#aaaaff;">一切変更しない</strong>。<br>
+      つまり <strong style="color:#ffcc66;">任意のLLM</strong>（Qwen・LLaMA・Mistral・Bonsai-8B など）に
+      PatchProjectionを追加して学習するだけで、そのLLMはVLMになる。
+    </div>
+  </div>
+
+  <!-- 学習フェーズ詳細 -->
+  <div class="card full">
+    <h2>学習フェーズ詳細（キャッシュ高速化版）</h2>
+    <svg width="100%" viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#666" stroke-width="1.5" stroke-linecap="round"/>
+        </marker>
+        <marker id="br" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#ff7755" stroke-width="1.5" stroke-linecap="round"/>
+        </marker>
+      </defs>
+
+      <!-- 事前処理（グレー帯） -->
+      <rect x="10" y="10" width="280" height="180" rx="10" fill="#1e1e1e" stroke="#444" stroke-width="1" stroke-dasharray="6 3"/>
+      <text x="150" y="30" text-anchor="middle" fill="#666" font-size="11">事前処理（1回だけ）</text>
+
+      <rect x="30" y="42" width="220" height="34" rx="7" fill="#252530" stroke="#555" stroke-width="1"/>
+      <text x="140" y="62" text-anchor="middle" fill="#9999cc" font-size="11">STAIR-Captions キャプション</text>
+
+      <line x1="140" y1="76" x2="140" y2="96" stroke="#555" stroke-width="1.5" marker-end="url(#b)"/>
+
+      <rect x="30" y="96" width="220" height="34" rx="7" fill="#252535" stroke="#555577" stroke-width="1"/>
+      <text x="140" y="117" text-anchor="middle" fill="#9999ee" font-size="11">Qwen2.5-1.5B（凍結）</text>
+
+      <line x1="140" y1="130" x2="140" y2="150" stroke="#555" stroke-width="1.5" marker-end="url(#b)"/>
+
+      <rect x="30" y="150" width="220" height="32" rx="7" fill="#202530" stroke="#445566" stroke-width="1"/>
+      <text x="140" y="169" text-anchor="middle" fill="#7799bb" font-size="11">caption_cache/*.npy 保存</text>
+
+      <!-- 学習ループ -->
+      <rect x="320" y="10" width="570" height="180" rx="10" fill="#1a2020" stroke="#3a5040" stroke-width="1"/>
+      <text x="605" y="30" text-anchor="middle" fill="#7aaa88" font-size="11">学習ループ（毎epoch）</text>
+
+      <rect x="340" y="42" width="120" height="34" rx="7" fill="#1a3a2a" stroke="#3aaa6a" stroke-width="1"/>
+      <text x="400" y="63" text-anchor="middle" fill="#88ddaa" font-size="11">画像バッチ</text>
+
+      <line x1="460" y1="59" x2="500" y2="59" stroke="#555" stroke-width="1.5" marker-end="url(#b)"/>
+
+      <rect x="500" y="42" width="170" height="34" rx="7" fill="#2a2010" stroke="#cc8833" stroke-width="2"/>
+      <text x="585" y="60" text-anchor="middle" fill="#ffcc66" font-size="11" font-weight="600">PatchProjection</text>
+      <text x="585" y="72" text-anchor="middle" fill="#997744" font-size="9">← 学習対象（6M）</text>
+
+      <line x1="670" y1="59" x2="710" y2="59" stroke="#555" stroke-width="1.5" marker-end="url(#b)"/>
+
+      <rect x="710" y="42" width="160" height="34" rx="7" fill="#2a2020" stroke="#aa4433" stroke-width="1.5"/>
+      <text x="790" y="60" text-anchor="middle" fill="#ff9977" font-size="11" font-weight="600">InfoNCE Loss</text>
+      <text x="790" y="72" text-anchor="middle" fill="#774433" font-size="9">画像↔テキストを近づける</text>
+
+      <!-- キャッシュ読み込み -->
+      <rect x="340" y="110" width="220" height="34" rx="7" fill="#1e2535" stroke="#446688" stroke-width="1"/>
+      <text x="450" y="131" text-anchor="middle" fill="#7799cc" font-size="11">caption_cache から読み込み</text>
+      <text x="450" y="143" text-anchor="middle" fill="#4a6688" font-size="9">Qwen不要・高速</text>
+
+      <line x1="560" y1="127" x2="710" y2="80" stroke="#446688" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#b)"/>
+
+      <!-- 逆伝播 -->
+      <path d="M790 76 Q790 160 585 160 Q500 160 500 76" fill="none" stroke="#ff7755" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#br)"/>
+      <text x="690" y="178" text-anchor="middle" fill="#aa5533" font-size="10">勾配逆伝播（PatchProjectionのみ更新）</text>
+    </svg>
+  </div>
+
+  <!-- パラメータ比較 -->
+  <div class="card">
+    <h2>学習パラメータ数の比較</h2>
+    <canvas id="paramChart" height="200"></canvas>
+  </div>
+
+  <!-- 学習時間比較 -->
+  <div class="card">
+    <h2>キャッシュによる学習時間の比較</h2>
+    <canvas id="speedChart" height="200"></canvas>
+  </div>
+
+  <!-- 汎用性の説明 -->
+  <div class="card full">
+    <h2>任意のLLMをVLMにする手順</h2>
+    <svg width="100%" viewBox="0 0 900 120" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M2 1L8 5L2 9" fill="none" stroke="#7ef7a0" stroke-width="1.5" stroke-linecap="round"/>
+        </marker>
+      </defs>
+
+      <!-- Step 1 -->
+      <rect x="10" y="20" width="160" height="80" rx="10" fill="#1e2235" stroke="#4a5aaa" stroke-width="1.5"/>
+      <text x="90" y="48" text-anchor="middle" fill="#aaaaff" font-size="13" font-weight="600">① 好きなLLM</text>
+      <text x="90" y="66" text-anchor="middle" fill="#7788bb" font-size="11">Qwen / LLaMA</text>
+      <text x="90" y="80" text-anchor="middle" fill="#7788bb" font-size="11">Mistral / Bonsai</text>
+      <text x="90" y="94" text-anchor="middle" fill="#556688" font-size="10">パラメータ凍結</text>
+
+      <line x1="170" y1="60" x2="210" y2="60" stroke="#7ef7a0" stroke-width="2" marker-end="url(#c)"/>
+
+      <!-- Step 2 -->
+      <rect x="210" y="20" width="200" height="80" rx="10" fill="#2a2010" stroke="#cc8833" stroke-width="2"/>
+      <text x="310" y="46" text-anchor="middle" fill="#ffcc66" font-size="13" font-weight="600">② PatchProjection 追加</text>
+      <text x="310" y="64" text-anchor="middle" fill="#aa8844" font-size="11">hidden_sizeを取得して</text>
+      <text x="310" y="78" text-anchor="middle" fill="#aa8844" font-size="11">Linear×2 を繋ぐだけ</text>
+      <text x="310" y="94" text-anchor="middle" fill="#775533" font-size="10">config.pyの1行変更で対応</text>
+
+      <line x1="410" y1="60" x2="450" y2="60" stroke="#7ef7a0" stroke-width="2" marker-end="url(#c)"/>
+
+      <!-- Step 3 -->
+      <rect x="450" y="20" width="200" height="80" rx="10" fill="#1a3a2a" stroke="#3aaa6a" stroke-width="1.5"/>
+      <text x="550" y="46" text-anchor="middle" fill="#7ef7a0" font-size="13" font-weight="600">③ 画像データで学習</text>
+      <text x="550" y="64" text-anchor="middle" fill="#5a9a7a" font-size="11">STAIR-Captions</text>
+      <text x="550" y="78" text-anchor="middle" fill="#5a9a7a" font-size="11">82k 画像+日本語キャプション</text>
+      <text x="550" y="94" text-anchor="middle" fill="#3a7a5a" font-size="10">PatchProjectionのみ更新</text>
+
+      <line x1="650" y1="60" x2="690" y2="60" stroke="#7ef7a0" stroke-width="2" marker-end="url(#c)"/>
+
+      <!-- Step 4 -->
+      <rect x="690" y="20" width="200" height="80" rx="10" fill="#2a1a2a" stroke="#aa44aa" stroke-width="1.5"/>
+      <text x="790" y="46" text-anchor="middle" fill="#ddaaff" font-size="13" font-weight="600">④ VLM 完成</text>
+      <text x="790" y="64" text-anchor="middle" fill="#997799" font-size="11">画像を入力すると</text>
+      <text x="790" y="78" text-anchor="middle" fill="#997799" font-size="11">LLMが日本語で説明</text>
+      <text x="790" y="94" text-anchor="middle" fill="#664466" font-size="10">保存サイズ: 約 12MB</text>
+    </svg>
+  </div>
+
+  <!-- スペック表 -->
+  <div class="card">
+    <h2>モデル仕様</h2>
+    <table>
+      <tr><th>項目</th><th>値</th></tr>
+      <tr><td>Text Encoder</td><td>Qwen2.5-1.5B <span class="badge freeze">凍結</span></td></tr>
+      <tr><td>Vision Bridge</td><td>PatchProjection <span class="badge train">学習</span> <span class="badge new">追加</span></td></tr>
+      <tr><td>学習パラメータ</td><td>約 6M</td></tr>
+      <tr><td>凍結パラメータ</td><td>約 1,540M</td></tr>
+      <tr><td>入力解像度</td><td>224 × 224</td></tr>
+      <tr><td>パッチ数</td><td>196（16×16px）</td></tr>
+      <tr><td>埋め込み次元</td><td>1536</td></tr>
+      <tr><td>損失関数</td><td>InfoNCE（対称）</td></tr>
+      <tr><td>データセット</td><td>STAIR-Captions（82k枚）</td></tr>
+      <tr><td>動作GPU</td><td>RTX 4060 Ti 16GB</td></tr>
+    </table>
+  </div>
+
+  <!-- データセット内訳 -->
+  <div class="card">
+    <h2>データセット内訳</h2>
+    <canvas id="dataChart" height="200"></canvas>
+  </div>
+
+</div>
+
+<script>
+const dark = { color: '#e0e0e0', grid: '#2a2d3e' };
+
+new Chart(document.getElementById('paramChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Qwen2.5-1.5B\n（凍結）', 'PatchProjection\n（学習）'],
+    datasets: [{
+      data: [1540, 6.3],
+      backgroundColor: ['#3a5a9a', '#cc8833'],
+      borderRadius: 6,
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      y: {
+        type: 'logarithmic',
+        ticks: { color: dark.color, callback: v => v + 'M' },
+        grid: { color: dark.grid },
+        title: { display: true, text: 'パラメータ数 (M) ※対数スケール', color: '#888', font: { size: 11 } }
+      },
+      x: { ticks: { color: dark.color, font: { size: 11 } }, grid: { color: dark.grid } }
+    }
+  }
+});
+
+new Chart(document.getElementById('speedChart'), {
+  type: 'bar',
+  data: {
+    labels: ['キャッシュなし\n（Qwen毎回実行）', 'キャッシュあり\n（本プロジェクト）'],
+    datasets: [{
+      label: '1epoch 学習時間 (分)',
+      data: [90, 8],
+      backgroundColor: ['#aa3a3a', '#3aaa6a'],
+      borderRadius: 6,
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      y: {
+        ticks: { color: dark.color, callback: v => v + '分' },
+        grid: { color: dark.grid },
+      },
+      x: { ticks: { color: dark.color, font: { size: 11 } }, grid: { color: dark.grid } }
+    }
+  }
+});
+
+new Chart(document.getElementById('dataChart'), {
+  type: 'doughnut',
+  data: {
+    labels: ['train (82,783枚)', 'validation (40,504枚)'],
+    datasets: [{
+      data: [82783, 40504],
+      backgroundColor: ['#3a7aaa', '#7aaa3a'],
+      borderColor: ['#1a1d27'],
+      borderWidth: 3,
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: {
+      legend: {
+        position: 'bottom',
+        labels: { color: dark.color, padding: 16, font: { size: 12 } }
+      },
+      tooltip: {
+        callbacks: {
+          label: ctx => ` ${ctx.label}: ${ctx.raw.toLocaleString()}枚`
+        }
+      }
+    }
+  }
+});
+</script>
+</body>
+</html>
